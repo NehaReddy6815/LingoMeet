@@ -1,20 +1,39 @@
-import { Routes, Route } from "react-router-dom";
-import LandingPage from "./pages/LandingPage.jsx";
-import CreateMeeting from "./pages/CreateMeeting.jsx";
-import JoinMeeting from "./pages/JoinMeeting.jsx";
-import MeetingRoom from "./pages/MeetingRoom.jsx";
-import Header from "./components/Header.jsx";
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom';
+import LandingPage from './pages/LandingPage';
+import CreateMeeting from './pages/CreateMeeting';
+import JoinMeeting from './pages/JoinMeeting';
+import MeetingRoom from './pages/MeetingRoom';
 
-export default function App() {
+function LandingPageWithNav() {
+  const navigate = useNavigate();
+  
+  return <LandingPage onCreateMeeting={() => navigate('/create')} onJoinMeeting={() => navigate('/join')} />;
+}
+
+function CreateMeetingWithNav() {
+  const navigate = useNavigate();
+  
+  return <CreateMeeting onStartMeeting={(meetingId) => navigate(`/meeting/${meetingId}`)} />;
+}
+
+function JoinMeetingWithNav() {
+  const navigate = useNavigate();
+  
+  return <JoinMeeting onJoinMeeting={(meetingId) => navigate(`/meeting/${meetingId}`)} />;
+}
+
+function App() {
   return (
-    <>
-      <Header />
+    <Router>
       <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/create" element={<CreateMeeting />} />
-        <Route path="/join" element={<JoinMeeting />} />
-        <Route path="/meeting/:id" element={<MeetingRoom />} />
+        <Route path="/" element={<LandingPageWithNav />} />
+        <Route path="/create" element={<CreateMeetingWithNav />} />
+        <Route path="/join" element={<JoinMeetingWithNav />} />
+        <Route path="/meeting/:meetingId" element={<MeetingRoom />} />
       </Routes>
-    </>
+    </Router>
   );
 }
+
+export default App;

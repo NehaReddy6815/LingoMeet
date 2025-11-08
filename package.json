@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "@google-cloud/speech": "^7.2.1",
+    "@google-cloud/translate": "^9.2.1",
+    "microsoft-cognitiveservices-speech-sdk": "^1.46.0",
+    "openai": "^6.8.1",
+    "socket.io-client": "^4.8.1"
+  }
+}

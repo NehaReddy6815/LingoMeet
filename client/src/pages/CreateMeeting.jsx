@@ -52,7 +52,7 @@ const SettingCard = ({ icon: Icon, title, children }) => {
   );
 };
 
-export default function CreateMeeting() {
+export default function CreateMeeting({ onStartMeeting }) {
   const [meetingId] = useState('ABC-DEF-GHI');
   const [copied, setCopied] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState('English');
@@ -67,6 +67,12 @@ export default function CreateMeeting() {
     navigator.clipboard.writeText(meetingLink);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+  
+  const handleStartMeeting = () => {
+    if (onStartMeeting) {
+      onStartMeeting(meetingId);
+    }
   };
   
   const languages = [
@@ -239,7 +245,10 @@ export default function CreateMeeting() {
           
           {/* Start Meeting Button */}
           <div className="mt-12 flex justify-center">
-            <button className="px-16 py-5 bg-gradient-to-r from-purple-600 to-purple-500 text-white text-xl font-bold rounded-full shadow-2xl hover:shadow-purple-500/50 hover:scale-105 transition-all flex items-center gap-3">
+            <button 
+              onClick={handleStartMeeting}
+              className="px-16 py-5 bg-gradient-to-r from-purple-600 to-purple-500 text-white text-xl font-bold rounded-full shadow-2xl hover:shadow-purple-500/50 hover:scale-105 transition-all flex items-center gap-3"
+            >
               <Video className="w-6 h-6" />
               Start Meeting Now
             </button>

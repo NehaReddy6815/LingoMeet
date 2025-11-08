@@ -48,7 +48,7 @@ const FeatureCard = ({ icon: Icon, iconColor, title, description, bgGradient }) 
   );
 };
 
-export default function LandingPage() {
+export default function LandingPage({ onCreateMeeting, onJoinMeeting }) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-300 via-purple-200 to-purple-100">
       <Header />
@@ -73,11 +73,17 @@ export default function LandingPage() {
           </p>
           
           <div className="flex flex-col sm:flex-row gap-5 justify-center items-center">
-            <button className="px-10 py-4 bg-purple-600 text-white text-lg font-semibold rounded-full shadow-lg hover:bg-purple-700 hover:scale-105 transition-all flex items-center gap-3">
+            <button 
+              onClick={onCreateMeeting}
+              className="px-10 py-4 bg-purple-600 text-white text-lg font-semibold rounded-full shadow-lg hover:bg-purple-700 hover:scale-105 transition-all flex items-center gap-3"
+            >
               <Video className="h-5 w-5" />
               Create Meeting
             </button>
-            <button className="px-10 py-4 bg-white text-gray-900 text-lg font-semibold rounded-full shadow-lg hover:bg-gray-50 hover:scale-105 transition-all flex items-center gap-3">
+            <button 
+              onClick={onJoinMeeting}
+              className="px-10 py-4 bg-white text-gray-900 text-lg font-semibold rounded-full shadow-lg hover:bg-gray-50 hover:scale-105 transition-all flex items-center gap-3"
+            >
               <Globe className="h-5 w-5" />
               Join Meeting
             </button>

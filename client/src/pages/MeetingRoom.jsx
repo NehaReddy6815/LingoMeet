@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Mic, MicOff, Video, VideoOff, Phone, Settings, Users, MessageSquare, Globe } from 'lucide-react';
+import socket from "../socket"; // ✅ Connect socket
 
 const Header = ({ meetingId }) => {
   return (
@@ -39,7 +40,6 @@ const ParticipantTile = ({ name, language, isSpeaking }) => {
               {language}
             </p>
           </div>
-          <Mic className="w-5 h-5 text-green-400" />
         </div>
       </div>
     </div>
@@ -83,20 +83,54 @@ export default function MeetingRoom() {
   const [showChat, setShowChat] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState('English');
   
-  const meetingId = 'ABC-DEF-GHI';
-  
-  const participants = [
-    { name: 'Maria Gonzalez', language: 'Spanish', isSpeaking: true },
-    { name: 'Raj Kumar', language: 'Hindi', isSpeaking: false },
-    { name: 'Sophie Chen', language: 'Mandarin', isSpeaking: false },
-    { name: 'Ahmed Hassan', language: 'Arabic', isSpeaking: false }
-  ];
-  
-  const transcripts = [
-    { name: 'Maria', language: 'Spanish', text: 'Hello everyone! Ready to start the presentation?', timestamp: '10:32 AM' },
-    { name: 'Raj', language: 'Hindi', text: 'Yes, I have the slides prepared. Let me share my screen.', timestamp: '10:33 AM' },
-    { name: 'Sophie', language: 'Mandarin', text: 'Perfect timing! I just joined.', timestamp: '10:33 AM' }
-  ];
+  const [transcripts, setTranscripts] = useState([]); // ✅ Live transcript state
+
+  const meetingId = "1234"; // TODO: replace w/ dynamic from URL
+
+  // ✅ Join meeting room on load
+  useEffect(() => {
+    socket.emit("join-meeting", { meetingId, language: selectedLanguage });
+  }, [selectedLanguage]);
+
+  // ✅ Receive subtitles live
+  useEffect(() => {
+    socket.on("receive-text", ({ text }) => {
+      setTranscripts(prev => [
+        ...prev,
+        {
+          name: "Participant",
+          language: selectedLanguage,
+          text,
+          timestamp: new Date().toLocaleTimeString()
+        }
+      ]);
+    });
+
+    return () => socket.off("receive-text");
+  }, [selectedLanguage]);
+
+ useEffect(() => {
+  if (!isMicOn) return;
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return;
+
+  const recognition = new SpeechRecognition();
+  recognition.lang = selectedLanguage; // ✅ Simple, clean, correct
+  recognition.continuous = true;
+
+  recognition.onresult = (e) => {
+    const spokenText = e.results[e.resultIndex][0].transcript;
+    socket.emit("speech-text", { meetingId, text: spokenText });
+  };
+
+  recognition.start();
+  return () => recognition.stop();
+}, [isMicOn, selectedLanguage]);
+
+
+
+  const participants = [];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900">
@@ -105,58 +139,47 @@ export default function MeetingRoom() {
       <div className="pt-20 px-4 pb-32">
         <div className="container mx-auto max-w-7xl">
           <div className="grid lg:grid-cols-4 gap-4 h-[calc(100vh-180px)]">
-            {/* Main Video Grid */}
+            
             <div className="lg:col-span-3">
               <div className="grid grid-cols-2 gap-4 h-full">
-                {participants.map((participant, index) => (
-                  <ParticipantTile key={index} {...participant} />
+                {participants.map((p, i) => (
+                  <ParticipantTile key={i} {...p} />
                 ))}
               </div>
             </div>
             
-            {/* Sidebar */}
             <div className="lg:col-span-1 bg-gray-800/50 backdrop-blur-sm rounded-2xl p-4 overflow-y-auto">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-white font-bold text-lg flex items-center gap-2">
-                  <MessageSquare className="w-5 h-5" />
-                  Live Transcript
-                </h3>
-                <button className="text-purple-400 hover:text-purple-300">
-                  <Settings className="w-5 h-5" />
-                </button>
-              </div>
               
-              {/* Language Selector */}
               <div className="mb-4">
                 <label className="text-gray-400 text-sm mb-2 block">Your Language</label>
-                <select 
-                  value={selectedLanguage}
-                  onChange={(e) => setSelectedLanguage(e.target.value)}
-                  className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 border border-gray-600 focus:border-purple-500 focus:outline-none"
-                >
-                  <option>English</option>
-                  <option>Spanish</option>
-                  <option>Hindi</option>
-                  <option>Mandarin</option>
-                  <option>Arabic</option>
-                  <option>Tamil</option>
-                  <option>Telugu</option>
-                  <option>Bengali</option>
-                </select>
+                <select
+  value={selectedLanguage}
+  onChange={(e) => setSelectedLanguage(e.target.value)}
+  className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 border border-gray-600"
+>
+  <option value="en-US">English</option>
+  <option value="hi-IN">Hindi</option>
+  <option value="te-IN">Telugu</option>
+  <option value="ta-IN">Tamil</option>
+  <option value="bn-IN">Bengali</option>
+  <option value="es-ES">Spanish</option>
+  <option value="ar-AR">Arabic</option>
+  <option value="zh-CN">Mandarin</option>
+</select>
+
               </div>
-              
-              {/* Transcripts */}
+
               <div className="space-y-3">
-                {transcripts.map((transcript, index) => (
-                  <TranscriptMessage key={index} {...transcript} />
+                {transcripts.map((t, index) => (
+                  <TranscriptMessage key={index} {...t} />
                 ))}
               </div>
+
             </div>
           </div>
         </div>
       </div>
       
-      {/* Controls Bar */}
       <div className="fixed bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur-sm border-t border-gray-800 py-6">
         <div className="container mx-auto px-6">
           <div className="flex items-center justify-center gap-6">
@@ -173,22 +196,10 @@ export default function MeetingRoom() {
               onClick={() => setIsVideoOn(!isVideoOn)}
             />
             <ControlButton
-              icon={Users}
-              label="Participants"
-              isActive={false}
-              onClick={() => {}}
-            />
-            <ControlButton
               icon={MessageSquare}
               label="Chat"
               isActive={showChat}
               onClick={() => setShowChat(!showChat)}
-            />
-            <ControlButton
-              icon={Settings}
-              label="Settings"
-              isActive={false}
-              onClick={() => {}}
             />
             <ControlButton
               icon={Phone}
