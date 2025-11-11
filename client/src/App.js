@@ -4,6 +4,7 @@ import LandingPage from './pages/LandingPage';
 import CreateMeeting from './pages/CreateMeeting';
 import JoinMeeting from './pages/JoinMeeting';
 import MeetingRoom from './pages/MeetingRoom';
+import testTranslation from './testTranslation';
 
 function LandingPageWithNav() {
   const navigate = useNavigate();
@@ -31,6 +32,7 @@ function App() {
         <Route path="/create" element={<CreateMeetingWithNav />} />
         <Route path="/join" element={<JoinMeetingWithNav />} />
         <Route path="/meeting/:meetingId" element={<MeetingRoom />} />
+        <Route path="/test" element={<testTranslation />} />
       </Routes>
     </Router>
   );

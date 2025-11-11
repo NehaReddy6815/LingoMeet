@@ -1,0 +1,21 @@
+{
+  "app": {
+    "title": "LingoMeet",
+    "tagline": "Speak in your language. Understand in theirs."
+  },
+  "meeting": {
+    "create": "Create Meeting",
+    "join": "Join Meeting",
+    "start": "Start Meeting Now",
+    "leave": "Leave Meeting",
+    "participants": "Participants",
+    "transcript": "Live Transcript"
+  },
+  "controls": {
+    "mute": "Mute",
+    "unmute": "Unmute",
+    "video_on": "Turn Off Camera",
+    "video_off": "Turn On Camera",
+    "settings": "Settings"
+  }
+}

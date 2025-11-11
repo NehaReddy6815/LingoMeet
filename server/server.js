@@ -32,12 +32,39 @@ io.on("connection", (socket) => {
 
   // When speech text is received from one user
   socket.on("speech-text", async ({ meetingId, text }) => {
-    // Broadcast to others in the room
-    io.to(meetingId).emit("receive-text", {
+  const sourceLang = socket.data.language || "en";
+
+  const sockets = await io.in(meetingId).fetchSockets();
+
+  for (let user of sockets) {
+    const targetLang = user.data.language || "en";
+
+    let translatedText = text;
+
+    if (sourceLang !== targetLang) {
+      try {
+        const response = await axios.post(process.env.LINGO_API_URL, {
+          text,
+          source: sourceLang,
+          target: targetLang
+        }, {
+          headers: { Authorization: `Bearer ${process.env.LINGO_API_KEY}` }
+        });
+
+        translatedText = response.data.text;
+      } catch (err) {
+        console.log("Translation error:", err.message);
+      }
+    }
+
+    io.to(user.id).emit("receive-text", {
       sender: socket.id,
-      text
+      text: translatedText,
+      language: targetLang
     });
-  });
+  }
+});
+
 
   socket.on("disconnect", () => {
     console.log("❌ User disconnected:", socket.id);
