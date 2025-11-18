@@ -3,7 +3,8 @@ import cors from "cors";
 import dotenv from "dotenv";
 import http from "http";
 import { Server } from "socket.io";
-import axios from "axios";
+import { createPipeline } from "./src/pipeline.js";
+import { setPreferredLanguage, setSocketId, removeUser } from "./src/sessions/store.js";
 
 dotenv.config();
 
@@ -15,62 +16,61 @@ app.use(express.json());
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*", // allow your React app to connect
+    origin: process.env.CLIENT_ORIGIN || "http://localhost:3000",
+    methods: ["GET", "POST"],
   },
 });
+
+const pipeline = createPipeline(io);
 
 // When a user connects to socket
 io.on("connection", (socket) => {
   console.log("🔗 User connected:", socket.id);
 
-  // Join meeting room
-  socket.on("join-meeting", ({ meetingId, language }) => {
+  socket.on('join-meeting', ({ meetingId, language, userId }) => {
     socket.join(meetingId);
-    socket.data.language = language; // store user's preferred lang
+    setPreferredLanguage(socket.id, language || 'en');
+    setSocketId(socket.id, socket.id);
+    socket.data.language = language;
     console.log(`✅ ${socket.id} joined ${meetingId} (${language})`);
   });
 
-  // When speech text is received from one user
-  socket.on("speech-text", async ({ meetingId, text }) => {
-  const sourceLang = socket.data.language || "en";
-
-  const sockets = await io.in(meetingId).fetchSockets();
-
-  for (let user of sockets) {
-    const targetLang = user.data.language || "en";
-
-    let translatedText = text;
-
-    if (sourceLang !== targetLang) {
-      try {
-        const response = await axios.post(process.env.LINGO_API_URL, {
-          text,
-          source: sourceLang,
-          target: targetLang
-        }, {
-          headers: { Authorization: `Bearer ${process.env.LINGO_API_KEY}` }
-        });
-
-        translatedText = response.data.text;
-      } catch (err) {
-        console.log("Translation error:", err.message);
+  // Audio-chunk handler
+  socket.on('audio-chunk', async (payload) => {
+    // payload: { userId, meetingId, chunk }
+    try {
+      const { userId, meetingId, chunk } = payload || {};
+      if (!chunk) {
+        console.warn('Received empty audio chunk');
+        return;
       }
+
+      const isBuffer = Buffer.isBuffer(chunk);
+      // Socket.io may deliver ArrayBuffer - convert if needed
+      const buffer = isBuffer ? chunk : Buffer.from(chunk);
+
+      console.log(`Received audio-chunk from ${userId || socket.id} size=${buffer.byteLength} bytes at ${new Date().toISOString()}`);
+
+      // Hand off to pipeline
+      pipeline.handleAudioChunk({ userId: userId || socket.id, meetingId, chunk: buffer, socketId: socket.id });
+    } catch (err) {
+      console.error('audio-chunk handler error:', err.message || err);
     }
+  });
 
-    io.to(user.id).emit("receive-text", {
-      sender: socket.id,
-      text: translatedText,
-      language: targetLang
-    });
-  }
-});
+  socket.on('leave-meeting', ({ meetingId }) => {
+    socket.leave(meetingId);
+    removeUser(socket.id);
+    console.log(`${socket.id} left ${meetingId}`);
+  });
 
-
-  socket.on("disconnect", () => {
-    console.log("❌ User disconnected:", socket.id);
+  socket.on('disconnect', () => {
+    console.log('❌ User disconnected:', socket.id);
+    removeUser(socket.id);
   });
 });
 
-server.listen(5000, () => {
-  console.log("🚀 Server running on http://localhost:5000");
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });

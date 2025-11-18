@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { Mic, MicOff, Video, VideoOff, Phone, Settings, Users, MessageSquare, Globe } from 'lucide-react';
-import socket from "../socket"; // ✅ Connect socket
+import React, { useState, useEffect, useRef } from 'react';
+import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
+import { Mic, MicOff, Video, VideoOff, Phone, MessageSquare, Globe, Users } from 'lucide-react';
+import socket from "../socket";
+import LiveSubtitles from '../components/LiveSubtitles';
 
 const Header = ({ meetingId }) => {
   return (
@@ -40,6 +42,7 @@ const ParticipantTile = ({ name, language, isSpeaking }) => {
               {language}
             </p>
           </div>
+          {isSpeaking && <Mic className="w-5 h-5 text-green-400" />}
         </div>
       </div>
     </div>
@@ -78,64 +81,198 @@ const ControlButton = ({ icon: Icon, label, isActive, onClick, variant = 'defaul
 };
 
 export default function MeetingRoom() {
+  const { meetingId } = useParams();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  
+  // Get language and name from URL
+  const urlLanguage = searchParams.get('language') || 'en-US';
+  const urlName = searchParams.get('name') || 'You';
+  
   const [isMicOn, setIsMicOn] = useState(true);
   const [isVideoOn, setIsVideoOn] = useState(true);
   const [showChat, setShowChat] = useState(false);
-  const [selectedLanguage, setSelectedLanguage] = useState('English');
-  
-  const [transcripts, setTranscripts] = useState([]); // ✅ Live transcript state
+  const [selectedLanguage, setSelectedLanguage] = useState(urlLanguage);
+  const [transcripts, setTranscripts] = useState([]);
+  const [participants] = useState([
+    { name: urlName, language: urlLanguage, isSpeaking: false }
+  ]);
+  const [micPermission, setMicPermission] = useState('unknown');
+  const [recorderState, setRecorderState] = useState('inactive');
+  const [lastChunkSize, setLastChunkSize] = useState(0);
+  const [socketConnectedState, setSocketConnectedState] = useState(socket && socket.connected);
 
-  const meetingId = "1234"; // TODO: replace w/ dynamic from URL
-
-  // ✅ Join meeting room on load
+  // Join meeting room on load
   useEffect(() => {
+    console.log('Joining meeting with language:', selectedLanguage);
     socket.emit("join-meeting", { meetingId, language: selectedLanguage });
-  }, [selectedLanguage]);
+    
+    return () => {
+      socket.emit("leave-meeting", { meetingId });
+    };
+  }, [meetingId, selectedLanguage]);
 
-  // ✅ Receive subtitles live
+  
+
+  // Speech recognition
   useEffect(() => {
-    socket.on("receive-text", ({ text }) => {
-      setTranscripts(prev => [
-        ...prev,
-        {
-          name: "Participant",
-          language: selectedLanguage,
-          text,
-          timestamp: new Date().toLocaleTimeString()
+    // Use MediaRecorder to capture microphone audio in small chunks and send to server
+    let mediaStream = null;
+    let mediaRecorder = null;
+    let isRecording = false;
+    let socketConnected = socket && socket.connected;
+
+    const startRecording = async () => {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          console.error('getUserMedia not supported in this browser');
+          return;
         }
-      ]);
-    });
 
-    return () => socket.off("receive-text");
-  }, [selectedLanguage]);
+        console.log('Requesting microphone permission...');
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        console.log('Microphone permission granted, tracks:', mediaStream.getAudioTracks().length);
 
- useEffect(() => {
-  if (!isMicOn) return;
+        // prefer webm/opus if available, otherwise try other common audio mime types
+        const preferredTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
+        let mimeType = '';
+        for (const t of preferredTypes) {
+          if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) {
+            mimeType = t;
+            break;
+          }
+        }
+        if (!mimeType) mimeType = undefined; // let browser pick default
 
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) return;
+        try {
+          mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
+        } catch (err) {
+          console.warn('MediaRecorder constructor failed with mime', mimeType, err);
+          mediaRecorder = new MediaRecorder(mediaStream);
+        }
 
-  const recognition = new SpeechRecognition();
-  recognition.lang = selectedLanguage; // ✅ Simple, clean, correct
-  recognition.continuous = true;
+        mediaRecorder.addEventListener('start', () => {
+          isRecording = true;
+          console.log('MediaRecorder started, mimeType=', mimeType, 'state=', mediaRecorder.state);
+          try { setRecorderState(mediaRecorder.state); } catch (e) {}
+        });
 
-  recognition.onresult = (e) => {
-    const spokenText = e.results[e.resultIndex][0].transcript;
-    socket.emit("speech-text", { meetingId, text: spokenText });
+        mediaRecorder.addEventListener('stop', () => {
+          isRecording = false;
+          console.log('MediaRecorder stopped');
+          try { setRecorderState(mediaRecorder.state); } catch (e) {}
+        });
+
+        mediaRecorder.addEventListener('error', (e) => {
+          console.error('MediaRecorder error:', e);
+        });
+
+        mediaRecorder.addEventListener('dataavailable', async (ev) => {
+          if (!ev.data || ev.data.size === 0) return;
+          try {
+            const blob = ev.data;
+            const arrayBuffer = await blob.arrayBuffer();
+            console.log('Captured audio chunk size:', arrayBuffer.byteLength);
+            try { setLastChunkSize(arrayBuffer.byteLength); } catch (e) {}
+
+            if (!socket || !socket.connected) {
+              console.warn('Socket not connected, dropping audio chunk');
+              return;
+            }
+
+            // send binary ArrayBuffer via socket.io
+            socket.emit('audio-chunk', { userId: socket.id, meetingId, chunk: arrayBuffer });
+            console.log('Sent audio-chunk to server, socket id:', socket.id);
+          } catch (err) {
+            console.error('Failed to process audio chunk:', err);
+          }
+        });
+
+        // Start with small timeslice ~180ms
+        const timeslice = 180;
+        try {
+          mediaRecorder.start(timeslice);
+          console.log(`Recorder started with ${timeslice}ms timeslice`);
+        } catch (err) {
+          console.warn('mediaRecorder.start failed with timeslice, starting without timeslice', err);
+          mediaRecorder.start();
+        }
+      } catch (err) {
+        console.error('Could not start recording:', err);
+      }
+    };
+
+    const stopRecording = () => {
+      try {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
+        }
+        if (mediaStream) {
+          mediaStream.getTracks().forEach(t => t.stop());
+        }
+      } catch (err) {
+        console.warn('Error stopping recorder:', err);
+      }
+    };
+
+    // Wait for socket connection before starting recording to avoid dropped chunks
+    if (isMicOn) {
+      if (socket && socket.connected) {
+        startRecording();
+      } else {
+        console.log('Socket not connected yet, waiting to start recorder...');
+        const onConnect = () => {
+          console.log('Socket connected, starting recorder');
+          startRecording();
+          socket.off('connect', onConnect);
+        };
+        socket.on('connect', onConnect);
+      }
+    }
+
+    // Update socket connection indicator
+    const onSocketConnect = () => setSocketConnectedState(true);
+    const onSocketDisconnect = () => setSocketConnectedState(false);
+    if (socket) {
+      socket.on('connect', onSocketConnect);
+      socket.on('disconnect', onSocketDisconnect);
+    }
+
+    return () => {
+      try {
+        if (socket) {
+          socket.off('connect', onSocketConnect);
+          socket.off('disconnect', onSocketDisconnect);
+        }
+      } catch (e) {}
+      stopRecording();
+    };
+  }, [isMicOn, selectedLanguage, meetingId]);
+
+  const leaveMeeting = () => {
+    socket.emit("leave-meeting", { meetingId });
+    navigate('/');
   };
-
-  recognition.start();
-  return () => recognition.stop();
-}, [isMicOn, selectedLanguage]);
-
-
-
-  const participants = [];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900">
       <Header meetingId={meetingId} />
-      
+      {/* Debug panel */}
+      <div className="fixed top-20 right-6 w-72 bg-gray-800/80 p-3 rounded-md border border-gray-700 text-sm z-50">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-xs text-gray-400">Debug</span>
+          <span className="text-xs text-gray-400">Socket: {socketConnectedState ? 'connected' : 'disconnected'}</span>
+        </div>
+        <div className="text-xs text-gray-300">Mic: {micPermission}</div>
+        <div className="text-xs text-gray-300">Recorder: {recorderState}</div>
+        <div className="text-xs text-gray-300">Last chunk: {lastChunkSize} bytes</div>
+        <div className="mt-2">
+          <button
+            className="w-full bg-purple-600 text-white text-xs py-1 rounded"
+            onClick={() => setIsMicOn(s => !s)}
+          >{isMicOn ? 'Stop Mic' : 'Start Mic'}</button>
+        </div>
+      </div>
       <div className="pt-20 px-4 pb-32">
         <div className="container mx-auto max-w-7xl">
           <div className="grid lg:grid-cols-4 gap-4 h-[calc(100vh-180px)]">
@@ -145,36 +282,45 @@ export default function MeetingRoom() {
                 {participants.map((p, i) => (
                   <ParticipantTile key={i} {...p} />
                 ))}
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="relative bg-gray-800/50 rounded-2xl border-2 border-gray-700 border-dashed flex items-center justify-center">
+                    <div className="text-center">
+                      <Users className="w-12 h-12 text-gray-600 mx-auto mb-2" />
+                      <p className="text-gray-500">Waiting for participants...</p>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
             
             <div className="lg:col-span-1 bg-gray-800/50 backdrop-blur-sm rounded-2xl p-4 overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-white font-bold text-lg flex items-center gap-2">
+                  <MessageSquare className="w-5 h-5" />
+                  Live Transcript
+                </h3>
+              </div>
               
               <div className="mb-4">
                 <label className="text-gray-400 text-sm mb-2 block">Your Language</label>
                 <select
-  value={selectedLanguage}
-  onChange={(e) => setSelectedLanguage(e.target.value)}
-  className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 border border-gray-600"
->
-  <option value="en-US">English</option>
-  <option value="hi-IN">Hindi</option>
-  <option value="te-IN">Telugu</option>
-  <option value="ta-IN">Tamil</option>
-  <option value="bn-IN">Bengali</option>
-  <option value="es-ES">Spanish</option>
-  <option value="ar-AR">Arabic</option>
-  <option value="zh-CN">Mandarin</option>
-</select>
-
+                  value={selectedLanguage}
+                  onChange={(e) => setSelectedLanguage(e.target.value)}
+                  className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 border border-gray-600 focus:border-purple-500 focus:outline-none"
+                >
+                  <option value="en-US">English</option>
+                  <option value="hi-IN">Hindi</option>
+                  <option value="te-IN">Telugu</option>
+                  <option value="ta-IN">Tamil</option>
+                  <option value="bn-IN">Bengali</option>
+                  <option value="es-ES">Spanish</option>
+                  <option value="ar-SA">Arabic</option>
+                  <option value="zh-CN">Mandarin</option>
+                </select>
               </div>
-
-              <div className="space-y-3">
-                {transcripts.map((t, index) => (
-                  <TranscriptMessage key={index} {...t} />
-                ))}
+              <div className="space-y-3 h-96">
+                <LiveSubtitles />
               </div>
-
             </div>
           </div>
         </div>
@@ -205,7 +351,7 @@ export default function MeetingRoom() {
               icon={Phone}
               label="Leave"
               variant="danger"
-              onClick={() => {}}
+              onClick={leaveMeeting}
             />
           </div>
         </div>
