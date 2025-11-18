@@ -5,12 +5,41 @@ import http from "http";
 import { Server } from "socket.io";
 import { createPipeline } from "./src/pipeline.js";
 import { setPreferredLanguage, setSocketId, removeUser } from "./src/sessions/store.js";
+import { translateText } from "./src/translation/lingoTranslator.js";
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// simple health endpoint to verify server is running
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+// Emit a test subtitle to a meeting (for debugging client subtitle delivery)
+app.post('/emit-test', (req, res) => {
+  const { meetingId, text = 'Test subtitle', sourceLang = 'en', targetLang = 'en' } = req.body || {};
+  if (!meetingId) return res.status(400).json({ error: 'meetingId required' });
+
+  // send to all sockets in the room
+  io.in(meetingId).fetchSockets().then(sockets => {
+    sockets.forEach(s => {
+      io.to(s.id).emit('subtitle', {
+        userId: 'server-test',
+        translatedText: text,
+        sourceLang,
+        targetLang,
+        speakerName: 'Server'
+      });
+    });
+    res.json({ ok: true, sent: sockets.length });
+  }).catch(err => {
+    console.error('emit-test error', err);
+    res.status(500).json({ error: String(err) });
+  });
+});
 
 // Create HTTP server + websocket server
 const server = http.createServer(app);
@@ -25,7 +54,7 @@ const pipeline = createPipeline(io);
 
 // When a user connects to socket
 io.on("connection", (socket) => {
-  console.log("🔗 User connected:", socket.id);
+  console.log("🔗 User connected:", socket.id, 'from', socket.handshake.address);
 
   socket.on('join-meeting', ({ meetingId, language, userId }) => {
     socket.join(meetingId);
@@ -62,6 +91,37 @@ io.on("connection", (socket) => {
     socket.leave(meetingId);
     removeUser(socket.id);
     console.log(`${socket.id} left ${meetingId}`);
+  });
+
+  // Optional: receive speech text from client (browser SpeechRecognition fallback)
+  socket.on('speech-text', async ({ meetingId, text }) => {
+    try {
+      const sourceLang = socket.data.language || 'en';
+      const sockets = await io.in(meetingId).fetchSockets();
+
+      for (let s of sockets) {
+        const targetLang = (s.data && s.data.language) || 'en';
+        let translatedText = text;
+        if (targetLang && sourceLang && targetLang !== sourceLang) {
+          try {
+            translatedText = await translateText(text, sourceLang, targetLang);
+          } catch (err) {
+            console.error('Translation error (speech-text):', err.message || err);
+            translatedText = text;
+          }
+        }
+
+        io.to(s.id).emit('subtitle', {
+          userId: socket.id,
+          translatedText,
+          sourceLang: sourceLang,
+          targetLang,
+          speakerName: socket.id,
+        });
+      }
+    } catch (err) {
+      console.error('speech-text handler error:', err.message || err);
+    }
   });
 
   socket.on('disconnect', () => {

@@ -35,9 +35,18 @@ function createPipeline(io) {
           const targetLang = (s.data && s.data.language) || 'en';
           let translatedText = text;
 
-          if (targetLang && language && targetLang !== language) {
+          // Normalize language codes (extract language part from locale, e.g., "en-US" -> "en")
+          const normalizeLang = (lang) => {
+            if (!lang || lang === 'auto' || lang === 'unknown') return null;
+            return lang.split('-')[0].toLowerCase();
+          };
+
+          const sourceLangNorm = normalizeLang(language);
+          const targetLangNorm = normalizeLang(targetLang);
+
+          if (targetLangNorm && sourceLangNorm && targetLangNorm !== sourceLangNorm) {
             try {
-              translatedText = await translateText(text, language === 'auto' ? null : language, targetLang);
+              translatedText = await translateText(text, sourceLangNorm, targetLangNorm);
             } catch (err) {
               console.error('Translation failed:', err.message || err);
               translatedText = text;

@@ -24,8 +24,31 @@ export default function LiveSubtitles({ maxLines = 200 }) {
       });
     };
 
+    const onTranscript = (payload) => {
+      // payload: { type: 'transcript', userId, text, isFinal, language }
+      const item = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
+        userId: payload.userId,
+        text: payload.text || '',
+        sourceLang: payload.language,
+        targetLang: payload.language,
+        timestamp: new Date().toLocaleTimeString(),
+        speakerName: payload.userId || 'Speaker',
+        isTranscript: true,
+      };
+
+      setLines(prev => {
+        const next = [...prev, item].slice(-maxLines);
+        return next;
+      });
+    };
+
     socket.on('subtitle', onSubtitle);
-    return () => socket.off('subtitle', onSubtitle);
+    socket.on('transcript', onTranscript);
+    return () => {
+      socket.off('subtitle', onSubtitle);
+      socket.off('transcript', onTranscript);
+    };
   }, [maxLines]);
 
   useEffect(() => {

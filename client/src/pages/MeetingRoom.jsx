@@ -101,14 +101,56 @@ export default function MeetingRoom() {
   const [recorderState, setRecorderState] = useState('inactive');
   const [lastChunkSize, setLastChunkSize] = useState(0);
   const [socketConnectedState, setSocketConnectedState] = useState(socket && socket.connected);
+  const [micTestResults, setMicTestResults] = useState([]);
+  const [useBrowserStt, setUseBrowserStt] = useState(false);
+  const speechRecognitionRef = useRef(null);
+  const [meetingJoined, setMeetingJoined] = useState(false);
+
+  // Helper function to convert locale code (en-US) to language code (en)
+  const localeToLanguage = (locale) => {
+    if (!locale) return 'en';
+    // Extract language code from locale (e.g., "en-US" -> "en", "hi-IN" -> "hi")
+    const parts = locale.split('-');
+    return parts[0] || locale;
+  };
 
   // Join meeting room on load
   useEffect(() => {
-    console.log('Joining meeting with language:', selectedLanguage);
-    socket.emit("join-meeting", { meetingId, language: selectedLanguage });
+    if (!meetingId || !socket) return;
+    
+    let onConnectHandler = null;
+    
+    const joinMeeting = () => {
+      console.log('Joining meeting with language:', selectedLanguage);
+      const languageCode = localeToLanguage(selectedLanguage);
+      socket.emit("join-meeting", { meetingId, language: languageCode });
+      setMeetingJoined(true);
+    };
+
+    if (socket.connected) {
+      joinMeeting();
+    } else {
+      console.log('Socket not connected, waiting to join meeting...');
+      onConnectHandler = () => {
+        console.log('Socket connected, joining meeting');
+        joinMeeting();
+        if (socket && onConnectHandler) {
+          socket.off('connect', onConnectHandler);
+        }
+      };
+      socket.on('connect', onConnectHandler);
+    }
     
     return () => {
-      socket.emit("leave-meeting", { meetingId });
+      setMeetingJoined(false);
+      if (socket) {
+        if (onConnectHandler) {
+          socket.off('connect', onConnectHandler);
+        }
+        if (meetingId) {
+          socket.emit("leave-meeting", { meetingId });
+        }
+      }
     };
   }, [meetingId, selectedLanguage]);
 
@@ -215,20 +257,59 @@ export default function MeetingRoom() {
       }
     };
 
-    // Wait for socket connection before starting recording to avoid dropped chunks
-    if (isMicOn) {
-      if (socket && socket.connected) {
+    // Variables for cleanup
+    let checkAndStartHandler = null;
+    let cleanupFn = null;
+
+    // Wait for socket connection AND meeting join before starting recording
+    if (isMicOn && meetingId) {
+      // Check if all prerequisites are met
+      const canStart = socket && socket.connected && meetingJoined && meetingId;
+      
+      if (canStart) {
+        console.log('Starting recording: socket connected, meeting joined');
         startRecording();
       } else {
-        console.log('Socket not connected yet, waiting to start recorder...');
-        const onConnect = () => {
-          console.log('Socket connected, starting recorder');
-          startRecording();
-          socket.off('connect', onConnect);
-        };
-        socket.on('connect', onConnect);
+        console.log('Waiting for prerequisites before starting recorder...', {
+          socketConnected: socket && socket.connected,
+          meetingJoined,
+          meetingId
+        });
+        
+        // Wait for socket connection
+        if (!socket || !socket.connected) {
+          checkAndStartHandler = () => {
+            // When socket connects, check again if we can start
+            if (socket && socket.connected && meetingJoined && meetingId) {
+              console.log('Socket connected, starting recorder');
+              startRecording();
+              if (socket) {
+                socket.off('connect', checkAndStartHandler);
+              }
+            }
+          };
+          
+          if (socket) {
+            socket.on('connect', checkAndStartHandler);
+          }
+        }
+        
+        // If socket is connected but meeting not joined yet, 
+        // the recording will start when meetingJoined becomes true (via useEffect re-run)
+        // So we just need to wait
       }
+    } else if (!isMicOn) {
+      // Mic is off, stop recording
+      stopRecording();
     }
+
+    // Store cleanup function
+    cleanupFn = () => {
+      if (socket && checkAndStartHandler) {
+        socket.off('connect', checkAndStartHandler);
+      }
+      stopRecording();
+    };
 
     // Update socket connection indicator
     const onSocketConnect = () => setSocketConnectedState(true);
@@ -244,10 +325,16 @@ export default function MeetingRoom() {
           socket.off('connect', onSocketConnect);
           socket.off('disconnect', onSocketDisconnect);
         }
-      } catch (e) {}
-      stopRecording();
+        if (cleanupFn) {
+          cleanupFn();
+        } else {
+          stopRecording();
+        }
+      } catch (e) {
+        stopRecording();
+      }
     };
-  }, [isMicOn, selectedLanguage, meetingId]);
+  }, [isMicOn, selectedLanguage, meetingId, meetingJoined]);
 
   const leaveMeeting = () => {
     socket.emit("leave-meeting", { meetingId });
@@ -271,8 +358,80 @@ export default function MeetingRoom() {
             className="w-full bg-purple-600 text-white text-xs py-1 rounded"
             onClick={() => setIsMicOn(s => !s)}
           >{isMicOn ? 'Stop Mic' : 'Start Mic'}</button>
+          <button
+            className="w-full bg-gray-700 text-white text-xs py-1 rounded mt-2"
+            onClick={async () => {
+              // quick mic test: record ~2s and show chunk sizes
+              try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const mr = new MediaRecorder(stream);
+                const chunks = [];
+                mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data.size); };
+                mr.start(250);
+                setTimeout(() => {
+                  mr.stop();
+                }, 2000);
+                mr.onstop = () => {
+                  stream.getTracks().forEach(t => t.stop());
+                  setMicTestResults(chunks);
+                  console.log('Mic test chunk sizes:', chunks);
+                };
+              } catch (err) {
+                console.error('Mic test failed:', err);
+                setMicTestResults([`error: ${err.message || err}`]);
+              }
+            }}
+          >Test Mic</button>
+          <button
+            className={`w-full text-xs py-1 rounded mt-2 ${useBrowserStt ? 'bg-red-600 text-white' : 'bg-green-600 text-white'}`}
+            onClick={() => {
+              // toggle browser speech recognition
+              const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+              if (!SpeechRecognition) {
+                alert('Browser SpeechRecognition not supported');
+                return;
+              }
+
+              if (useBrowserStt) {
+                // stop
+                try { speechRecognitionRef.current?.stop(); } catch (e) {}
+                speechRecognitionRef.current = null;
+                setUseBrowserStt(false);
+                return;
+              }
+
+              const recog = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+              recog.lang = selectedLanguage || 'en-US';
+              recog.continuous = true;
+              recog.interimResults = false;
+
+              recog.onresult = (e) => {
+                const spokenText = e.results[e.resultIndex][0].transcript;
+                console.log('Browser STT recognized:', spokenText);
+                socket.emit('speech-text', { meetingId, text: spokenText });
+              };
+
+              recog.onerror = (err) => console.error('SpeechRecognition error', err);
+              recog.onend = () => { setUseBrowserStt(false); speechRecognitionRef.current = null; };
+
+              try {
+                recog.start();
+                speechRecognitionRef.current = recog;
+                setUseBrowserStt(true);
+              } catch (err) {
+                console.error('Failed to start SpeechRecognition', err);
+                alert('Failed to start SpeechRecognition: ' + err.message);
+              }
+            }}
+          >{useBrowserStt ? 'Stop Browser STT' : 'Use Browser STT'}</button>
         </div>
       </div>
+        {micTestResults.length > 0 && (
+          <div className="fixed top-44 right-6 w-72 bg-gray-800/80 p-2 rounded-md border border-gray-700 text-xs z-50">
+            <div className="text-gray-300 font-semibold mb-1">Mic Test Results</div>
+            <div className="text-gray-200">{micTestResults.join(', ')}</div>
+          </div>
+        )}
       <div className="pt-20 px-4 pb-32">
         <div className="container mx-auto max-w-7xl">
           <div className="grid lg:grid-cols-4 gap-4 h-[calc(100vh-180px)]">

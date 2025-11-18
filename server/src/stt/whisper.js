@@ -15,23 +15,42 @@ async function transcribeBuffer(buffer) {
   try {
     fs.writeFileSync(inPath, Buffer.from(buffer));
 
-    // Check for a local `whisper` CLI (from whisper.cpp or other local installation)
-    let whisperAvailable = false;
-    try {
-      const check = spawnSync('whisper', ['--version']);
-      whisperAvailable = !check.error && (check.status === 0 || check.status === null);
-    } catch (e) {
-      whisperAvailable = false;
+    // Check for a local `whisper` CLI or a python -m whisper installation.
+    const checkCommands = [
+      ['whisper', '--version'],
+      ['python', '-m', 'whisper', '--version'],
+      ['python3', '-m', 'whisper', '--version']
+    ];
+
+    let foundCmd = null;
+    for (const cmd of checkCommands) {
+      try {
+        const res = spawnSync(cmd[0], cmd.slice(1), { encoding: 'utf8' });
+        if (!res.error && (res.status === 0 || res.status === null)) {
+          foundCmd = cmd;
+          break;
+        }
+      } catch (e) {
+        // continue
+      }
     }
 
-    if (whisperAvailable) {
+    if (foundCmd) {
       try {
-        // Run local whisper to produce a text file output
-        // Note: arguments may differ between installations — adjust as needed for your environment
-        const args = [inPath, '--model', 'small', '--output_format', 'txt', '--output_dir', tmpDir];
-        const res = spawnSync('whisper', args, { encoding: 'utf8', timeout: 20000 });
+        // Build arguments for execution. If foundCmd starts with 'whisper' it's direct, otherwise use python -m whisper
+        let res;
+        if (foundCmd[0] === 'whisper') {
+          const args = [inPath, '--model', 'small', '--output_format', 'txt', '--output_dir', tmpDir];
+          res = spawnSync('whisper', args, { encoding: 'utf8', timeout: 120000 });
+        } else {
+          // python -m whisper
+          const py = foundCmd[0];
+          const args = ['-m', 'whisper', inPath, '--model', 'small', '--output_format', 'txt', '--output_dir', tmpDir];
+          res = spawnSync(py, args, { encoding: 'utf8', timeout: 120000 });
+        }
+
         if (res.error) {
-          console.error('local whisper error', res.error);
+          console.error('local whisper execution error', res.error);
         }
 
         // try to find generated txt file (some CLIs produce <audio>.txt)
@@ -42,10 +61,11 @@ async function transcribeBuffer(buffer) {
           text = fs.readFileSync(candidate, 'utf8');
         } else if (fs.existsSync(outTxt)) {
           text = fs.readFileSync(outTxt, 'utf8');
-        } else if (res.stdout) {
+        } else if (res && res.stdout) {
           text = String(res.stdout).trim().split('\n').slice(-1)[0] || '';
         }
 
+        console.log('local whisper used:', foundCmd.join(' '), 'transcribed length:', (text || '').length);
         return { text: text || '[unrecognized audio]', language: 'auto' };
       } catch (err) {
         console.error('error running local whisper:', err);
